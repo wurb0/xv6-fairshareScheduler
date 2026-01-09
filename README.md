@@ -1,4 +1,4 @@
-xv6 Fair-Share Scheduler (Weighted)
+# xv6 Fair-Share Scheduler 
 
 This repo shows my xv6-riscv fair-share scheduler work from an Operating Systems course.
 Scheduler goal: pick the RUNNABLE process with the smallest score = cpu_used / share so that

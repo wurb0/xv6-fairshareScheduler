@@ -1,131 +1,148 @@
-# xv6 Fair-Share Scheduler 
+# Fair-Share Scheduler for xv6 (RISC-V)
 
-This repo shows my xv6-riscv fair-share scheduler work from an Operating Systems course.
-Scheduler goal: pick the RUNNABLE process with the smallest score = cpu_used / share so that
-processes with higher share get more CPU over time and starved processes catch up.
+This project implements a fair-share CPU scheduler for the xv6 operating system. Instead of round-robin scheduling, processes receive CPU time proportional to a configurable share (weight), ensuring long-term fairness while preventing starvation.
 
-What’s included here:
-- proc.c (my modified version)
-- README (setup + what to change)
+This work was completed as part of CMPT 332 – Operating Systems and focuses on kernel-level scheduling, synchronization, and CPU accounting.
 
-Note: I’m not publishing the full xv6 tree for academic integrity reasons. This README explains
-exactly what to change in a clean xv6 checkout.
+---
 
-------------------------------------------------------------
-1) Build & Run (xv6-riscv)
-------------------------------------------------------------
+## Overview
 
-Prereqs (typical):
-- RISC-V toolchain (riscv64-unknown-elf-*)
-- qemu-system-riscv64
-- make
+Each runnable process tracks:
+- cpu_used: total CPU ticks consumed
+- share: weight representing how much CPU time the process should receive
 
-Steps:
-1. Get xv6-riscv from your course or the official repo (same version I used).
-2. Replace the kernel/proc.c with the proc.c in this repo.
-3. Build and run:
-   make clean
+At each scheduling decision, the scheduler selects the runnable process with the lowest score:
+
+score = cpu_used / share
+
+This ensures that processes with higher shares receive more CPU time over time, while CPU-deprived processes naturally catch up.
+
+---
+
+## Key Features
+
+- Fair-share scheduling based on historical CPU usage
+- Multi-core safe runnable queue
+- Per-process CPU accounting using kernel ticks
+- Kernel-level setshare() system call
+- Starvation-free scheduling
+- User-space test program to validate fairness
+
+---
+
+## Files Included
+
+This repository contains only the modified and relevant files:
+
+kernel/
+  proc.c        Scheduler implementation and runnable queue
+  proc.h        Process structure extensions
+
+user/
+  scheduler_test.c   User-space scheduler test
+
+README.md
+
+The full xv6 kernel is not included.
+
+---
+
+## Kernel Changes
+
+### Process Structure (proc.h)
+
+The following fields were added to struct proc:
+
+- cpu_used: total CPU ticks consumed
+- share: CPU share weight (minimum 1)
+
+These fields are used by the scheduler to compute fairness.
+
+---
+
+## Runnable Queue
+
+- A circular runnable queue is maintained separately from the process table
+- Protected by runnables_lock
+- Scheduler decisions additionally protected by sched_lock
+- Designed to be safe under multi-core execution
+
+---
+
+## Scheduler Logic
+
+High-level scheduling flow:
+1. Scan runnable queue
+2. Compute cpu_used / share for each RUNNABLE process
+3. Select the process with the lowest score
+4. Context switch and measure execution time
+5. Update cpu_used
+6. Reinsert the process if still runnable
+
+If no runnable processes exist, the CPU enters a wait-for-interrupt (wfi) state.
+
+---
+
+## System Call: setshare(int share)
+
+A custom system call allows user processes to dynamically adjust their CPU share.
+
+- Minimum share enforced (share >= 1)
+- Protected by the process lock
+- Takes effect immediately
+
+This syscall must be registered through the standard xv6 syscall path:
+sysproc.c, syscall.c, syscall.h, user.h, and usys.pl.
+
+---
+
+## Testing the Scheduler
+
+The scheduler_test program:
+- Forks multiple CPU-bound child processes
+- Runs identical workloads
+- Demonstrates proportional CPU allocation via output frequency
+
+Expected behavior:
+- Processes with higher shares make more visible progress
+- All processes continue executing (no starvation)
+
+---
+
+## Build and Run
+
+1. Apply these changes to an xv6 RISC-V tree
+2. Add scheduler_test.c to UPROGS in the Makefile
+3. Build and run xv6:
    make qemu
+4. Run the test:
+   scheduler_test
 
-If your setup uses a different folder layout, replace the proc.c in the same file location
-that contains the kernel scheduler() and process table code.
+---
 
-------------------------------------------------------------
-2) Design Summary
-------------------------------------------------------------
+## Notes
 
-Each process tracks:
-- p->cpu_used : total CPU ticks consumed
-- p->share    : weight controlling how much CPU it should get
+- CPU usage is measured using kernel ticks during context switches
+- cpu_used is periodically scaled down to prevent overflow
+- Priority fields are present but unused in the final design
+- Emphasis was placed on correctness and clarity over micro-optimizations
 
-Scheduling rule:
-- for each RUNNABLE process, compute score = cpu_used / share
-- run the process with the smallest score
+---
 
-CPU accounting:
-- measure ticks before and after swtch() and add the delta to cpu_used
-- apply decay when cpu_used gets huge (prevents overflow / keeps ratios meaningful)
+## Concepts Demonstrated
 
-Concurrency:
-- runnables_lock protects the runnable queue (circular array)
-- p->lock protects per-process state transitions
-- sched_lock prevents multi-core scheduling races while selecting a “best” process
+- Operating system scheduling policies
+- Kernel synchronization with spinlocks
+- CPU accounting
+- Multi-core scheduling
+- System call implementation
+- Low-level C systems programming
 
-Idle behavior:
-- if no runnable processes exist, CPU executes wfi (wait for interrupt)
+---
 
-------------------------------------------------------------
-3) Files / Changes Required (beyond proc.c)
-------------------------------------------------------------
+## Author
 
-My proc.c references new fields + a syscall-style setter for share. To make this compile/work,
-you need a few small changes in the standard xv6 files below.
-
-A) kernel/proc.h  (struct proc fields)
-Add fields to struct proc:
-- int share;
-- uint64 cpu_used;
-
-(You also have p->priority in your proc.c; if you kept it, ensure proc.h includes it too.)
-
-B) Add a way to set share from user space (recommended)
-You already wrote:
-  int setshare(int share)
-
-Expose it as a syscall so you can test from user programs.
-
-Typical syscall wiring in xv6:
-
-1) kernel/sysproc.c
-Add a syscall handler:
-  uint64
-  sys_setshare(void)
-  {
-    int share;
-    if(argint(0, &share) < 0) return -1;
-    return setshare(share);
-  }
-
-2) kernel/syscall.h
-Add a syscall number:
-  #define SYS_setshare  <next available number>
-
-3) kernel/syscall.c
-Add the function to the syscall table:
-  extern uint64 sys_setshare(void);
-  [SYS_setshare]  sys_setshare,
-
-4) user/user.h
-Add user-space prototype:
-  int setshare(int);
-
-5) user/usys.pl
-Add a stub:
-  entry("setshare");
-
-C) (Optional but useful) A user test program
-Create something like user/sharetest.c that:
-- forks a few CPU-bound loops
-- calls setshare(1), setshare(2), setshare(8) per process
-- prints runtime / progress so you can observe fairness
-
-Then add it to the build:
-- user/Makefile: add sharetest to UPROGS
-
-------------------------------------------------------------
-4) How to Test Quickly
-------------------------------------------------------------
-
-Inside xv6 shell:
-- Run your test program (sharetest)
-- Or run multiple CPU-bound programs in parallel and compare how fast they progress
-- Increase one process’s share and confirm it gets more CPU time over the run
-
-------------------------------------------------------------
-5) Known Notes / Assumptions
-------------------------------------------------------------
-
-- share must be >= 1 (I clamp it).
-- score uses integer division (cpu_used/share). That’s fine for fairness, but you can
-  also use scaled math if you want smoother behavior (e.g., cpu_used * K / share).
-- runnable queue is a circular array; locks matter on multicore.
+Mustafa Saqib  
+B.Sc. Computer Science  
+University of Saskatchewan
